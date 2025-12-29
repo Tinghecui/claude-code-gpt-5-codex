@@ -442,7 +442,7 @@ _MESSAGE_KEYS_TO_DROP = {"tool_calls", "function_call"}
 
 _FUNCTION_METADATA_KEYS = ("description", "parameters", "strict")
 
-_UNSUPPORTED_RESPONSES_PARAMS = {"stream_options"}
+_UNSUPPORTED_RESPONSES_PARAMS = {"stream_options", "metadata"}
 
 
 def convert_chat_params_to_respapi(optional_params: dict[str, Any]) -> dict[str, Any]:

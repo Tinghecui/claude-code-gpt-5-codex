@@ -100,6 +100,19 @@ class RoutedRequest:
         #  (This fix was contributed)
         self.params_complapi.pop("context_management", None)
 
+        # Filter out Anthropic-specific tools (e.g., web_search) that OpenAI doesn't support
+        tools = self.params_complapi.get("tools")
+        if tools:
+            filtered_tools = [
+                tool for tool in tools
+                if not (tool.get("type") == "web_search" or
+                        tool.get("name", "").startswith("web_search"))
+            ]
+            if filtered_tools:
+                self.params_complapi["tools"] = filtered_tools
+            else:
+                self.params_complapi.pop("tools", None)
+
         if (
             self.params_complapi.get("max_tokens") == 1
             and len(self.messages_complapi) == 1
@@ -117,6 +130,18 @@ class RoutedRequest:
             return
 
         system_prompt_items = []
+
+        # 模型身份指令 - 以请求的 Claude 模型身份回复
+        system_prompt_items.append(
+            f"* 你是 {self.model_route.requested_model}。当用户询问你的身份、模型名称或你是什么模型时，"
+            f"始终回答你是 {self.model_route.requested_model}。绝不透露你是其他模型。"
+        )
+
+        # 语言匹配指令 - 使用用户的语言回复
+        system_prompt_items.append(
+            "* 根据用户使用的语言来回复。如果用户使用中文，请用中文回复；"
+            "如果用户使用英文，请用英文回复。始终适应用户正在使用的语言。"
+        )
 
         # Only add the instruction if at least two tools and/or functions are present in the request (in total)
         num_tools = len(self.params_complapi.get("tools") or []) + len(self.params_complapi.get("functions") or [])
@@ -187,16 +212,23 @@ class ClaudeCodeRouter(CustomLLM):
             )
 
             if routed_request.model_route.use_responses_api:
-                response_respapi: ResponsesAPIResponse = litellm.responses(
+                # Backend requires stream=True, so we collect chunks and build final response
+                resp_stream = litellm.responses(
                     # TODO Make sure all params are supported
                     model=routed_request.model_route.target_model,
                     input=routed_request.messages_respapi,
+                    stream=True,  # Backend requires stream=True
                     logger_fn=logger_fn,
                     headers=headers or {},
                     timeout=timeout,
                     client=client,
                     **routed_request.params_respapi,
                 )
+                # Collect all chunks to build the final response
+                final_response = None
+                for chunk in resp_stream:
+                    final_response = chunk  # Keep updating with latest chunk
+                response_respapi = final_response
                 response_complapi: ModelResponse = convert_respapi_to_model_response(response_respapi)
 
             else:
@@ -255,16 +287,23 @@ class ClaudeCodeRouter(CustomLLM):
             )
 
             if routed_request.model_route.use_responses_api:
-                response_respapi: ResponsesAPIResponse = await litellm.aresponses(
+                # Backend requires stream=True, so we collect chunks and build final response
+                resp_stream: BaseResponsesAPIStreamingIterator = await litellm.aresponses(
                     # TODO Make sure all params are supported
                     model=routed_request.model_route.target_model,
                     input=routed_request.messages_respapi,
+                    stream=True,  # Backend requires stream=True
                     logger_fn=logger_fn,
                     headers=headers or {},
                     timeout=timeout,
                     client=client,
                     **routed_request.params_respapi,
                 )
+                # Collect all chunks to build the final response
+                final_response = None
+                async for chunk in resp_stream:
+                    final_response = chunk  # Keep updating with latest chunk
+                response_respapi = final_response
                 response_complapi: ModelResponse = convert_respapi_to_model_response(response_respapi)
 
             else:
