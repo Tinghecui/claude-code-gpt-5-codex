@@ -226,7 +226,6 @@ class ClaudeCodeRouter(CustomLLM):
                         # TODO Make sure all params are supported
                         model=routed_request.model_route.target_model,
                         input=routed_request.messages_respapi,
-                        stream=True,  # Backend requires stream=True
                         logger_fn=logger_fn,
                         headers=headers or {},
                         timeout=timeout,
@@ -317,7 +316,6 @@ class ClaudeCodeRouter(CustomLLM):
                         # TODO Make sure all params are supported
                         model=routed_request.model_route.target_model,
                         input=routed_request.messages_respapi,
-                        stream=True,  # Backend requires stream=True
                         logger_fn=logger_fn,
                         headers=headers or {},
                         timeout=timeout,

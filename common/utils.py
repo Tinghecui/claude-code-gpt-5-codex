@@ -460,6 +460,11 @@ def convert_chat_params_to_respapi(optional_params: dict[str, Any]) -> dict[str,
     # Force disable parallel tool calls; Claude Code executes one tool per turn
     params["parallel_tool_calls"] = False
 
+    # For non-streaming requests to Responses API, we need stream=True
+    # to collect chunks and build the final response
+    if not params.get("stream", False):
+        params["stream"] = True
+
     tools = params.get("tools")
     if tools is not None:
         converted_tools = _convert_tools_list(tools)
