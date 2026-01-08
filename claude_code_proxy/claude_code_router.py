@@ -1,8 +1,12 @@
 from copy import deepcopy
 from typing import AsyncGenerator, Callable, Generator, Optional, Union
+import logging
+import traceback
 
 import httpx
 import litellm
+
+logger = logging.getLogger(__name__)
 from litellm import (
     BaseResponsesAPIStreamingIterator,
     CustomLLM,
@@ -62,6 +66,7 @@ class RoutedRequest:
             # TODO What's a more reasonable way to decide when to unset
             #  temperature ?
             self.params_complapi.pop("temperature", None)
+            logger.info(f"[DEBUG] Before conversion - params_complapi has 'stream': {self.params_complapi.get('stream')}")
 
         # For Langfuse
         trace_name = f"{self.timestamp}-OUTBOUND-{self.calling_method}"
@@ -213,17 +218,26 @@ class ClaudeCodeRouter(CustomLLM):
 
             if routed_request.model_route.use_responses_api:
                 # Backend requires stream=True, so we collect chunks and build final response
-                resp_stream = litellm.responses(
-                    # TODO Make sure all params are supported
-                    model=routed_request.model_route.target_model,
-                    input=routed_request.messages_respapi,
-                    stream=True,  # Backend requires stream=True
-                    logger_fn=logger_fn,
-                    headers=headers or {},
-                    timeout=timeout,
-                    client=client,
-                    **routed_request.params_respapi,
-                )
+                logger.info(f"[DEBUG completion] Calling responses with model={routed_request.model_route.target_model}")
+                logger.info(f"[DEBUG completion] params_respapi: {routed_request.params_respapi}")
+                
+                try:
+                    resp_stream = litellm.responses(
+                        # TODO Make sure all params are supported
+                        model=routed_request.model_route.target_model,
+                        input=routed_request.messages_respapi,
+                        stream=True,  # Backend requires stream=True
+                        logger_fn=logger_fn,
+                        headers=headers or {},
+                        timeout=timeout,
+                        client=client,
+                        **routed_request.params_respapi,
+                    )
+                except Exception as e:
+                    logger.error(f"[ERROR completion] responses call failed: {type(e).__name__}: {str(e)}")
+                    logger.error(f"[ERROR completion] Request details: model={routed_request.model_route.target_model}")
+                    logger.error(f"[ERROR completion] Full traceback:\n{traceback.format_exc()}")
+                    raise
                 # Collect all chunks to build the final response
                 final_response = None
                 for chunk in resp_stream:
@@ -256,6 +270,9 @@ class ClaudeCodeRouter(CustomLLM):
             return response_complapi
 
         except Exception as e:
+            logger.error(f"[ERROR completion] Exception in completion: {type(e).__name__}: {str(e)}")
+            logger.error(f"[ERROR completion] Model: {model}, Stream: False")
+            logger.error(f"[ERROR completion] Full exception traceback:\n{traceback.format_exc()}")
             raise ProxyError(e) from e
 
     async def acompletion(
@@ -288,17 +305,31 @@ class ClaudeCodeRouter(CustomLLM):
 
             if routed_request.model_route.use_responses_api:
                 # Backend requires stream=True, so we collect chunks and build final response
-                resp_stream: BaseResponsesAPIStreamingIterator = await litellm.aresponses(
-                    # TODO Make sure all params are supported
-                    model=routed_request.model_route.target_model,
-                    input=routed_request.messages_respapi,
-                    stream=True,  # Backend requires stream=True
-                    logger_fn=logger_fn,
-                    headers=headers or {},
-                    timeout=timeout,
-                    client=client,
-                    **routed_request.params_respapi,
-                )
+                logger.info(f"[DEBUG] Calling aresponses with model={routed_request.model_route.target_model}")
+                logger.info(f"[DEBUG] params_respapi keys: {list(routed_request.params_respapi.keys())}")
+                logger.info(f"[DEBUG] params_respapi contains 'stream': {'stream' in routed_request.params_respapi}")
+                logger.info(f"[DEBUG] params_respapi full content: {routed_request.params_respapi}")
+                logger.info(f"[DEBUG] messages_respapi count: {len(routed_request.messages_respapi)}")
+                logger.info(f"[DEBUG] timeout: {timeout}, headers: {headers}")
+                
+                try:
+                    resp_stream: BaseResponsesAPIStreamingIterator = await litellm.aresponses(
+                        # TODO Make sure all params are supported
+                        model=routed_request.model_route.target_model,
+                        input=routed_request.messages_respapi,
+                        stream=True,  # Backend requires stream=True
+                        logger_fn=logger_fn,
+                        headers=headers or {},
+                        timeout=timeout,
+                        client=client,
+                        **routed_request.params_respapi,
+                    )
+                except Exception as e:
+                    logger.error(f"[ERROR] aresponses call failed: {type(e).__name__}: {str(e)}")
+                    logger.error(f"[ERROR] Request details - model: {routed_request.model_route.target_model}")
+                    logger.error(f"[ERROR] Request details - params: {routed_request.params_respapi}")
+                    logger.error(f"[ERROR] Full traceback:\n{traceback.format_exc()}")
+                    raise
                 # Collect all chunks to build the final response
                 final_response = None
                 async for chunk in resp_stream:
@@ -331,6 +362,9 @@ class ClaudeCodeRouter(CustomLLM):
             return response_complapi
 
         except Exception as e:
+            logger.error(f"[ERROR acompletion] Exception in acompletion: {type(e).__name__}: {str(e)}")
+            logger.error(f"[ERROR acompletion] Model: {model}, Stream: False")
+            logger.error(f"[ERROR acompletion] Full exception traceback:\n{traceback.format_exc()}")
             raise ProxyError(e) from e
 
     def streaming(
@@ -362,16 +396,25 @@ class ClaudeCodeRouter(CustomLLM):
             )
 
             if routed_request.model_route.use_responses_api:
-                resp_stream: BaseResponsesAPIStreamingIterator = litellm.responses(
-                    # TODO Make sure all params are supported
-                    model=routed_request.model_route.target_model,
-                    input=routed_request.messages_respapi,
-                    logger_fn=logger_fn,
-                    headers=headers or {},
-                    timeout=timeout,
-                    client=client,
-                    **routed_request.params_respapi,
-                )
+                logger.info(f"[DEBUG streaming] Calling responses with model={routed_request.model_route.target_model}")
+                logger.info(f"[DEBUG streaming] params_respapi: {routed_request.params_respapi}")
+                
+                try:
+                    resp_stream: BaseResponsesAPIStreamingIterator = litellm.responses(
+                        # TODO Make sure all params are supported
+                        model=routed_request.model_route.target_model,
+                        input=routed_request.messages_respapi,
+                        logger_fn=logger_fn,
+                        headers=headers or {},
+                        timeout=timeout,
+                        client=client,
+                        **routed_request.params_respapi,
+                    )
+                except Exception as e:
+                    logger.error(f"[ERROR streaming] responses call failed: {type(e).__name__}: {str(e)}")
+                    logger.error(f"[ERROR streaming] Request model: {routed_request.model_route.target_model}")
+                    logger.error(f"[ERROR streaming] Full traceback:\n{traceback.format_exc()}")
+                    raise
 
             else:
                 resp_stream: CustomStreamWrapper = litellm.completion(
@@ -420,6 +463,9 @@ class ClaudeCodeRouter(CustomLLM):
                 pass
 
         except Exception as e:
+            logger.error(f"[ERROR streaming] Exception in streaming: {type(e).__name__}: {str(e)}")
+            logger.error(f"[ERROR streaming] Model: {model}, Stream: True")
+            logger.error(f"[ERROR streaming] Full exception traceback:\n{traceback.format_exc()}")
             raise ProxyError(e) from e
 
     async def astreaming(
@@ -451,16 +497,27 @@ class ClaudeCodeRouter(CustomLLM):
             )
 
             if routed_request.model_route.use_responses_api:
-                resp_stream: BaseResponsesAPIStreamingIterator = await litellm.aresponses(
-                    # TODO Make sure all params are supported
-                    model=routed_request.model_route.target_model,
-                    input=routed_request.messages_respapi,
-                    logger_fn=logger_fn,
-                    headers=headers or {},
-                    timeout=timeout,
-                    client=client,
-                    **routed_request.params_respapi,
-                )
+                logger.info(f"[DEBUG astreaming] Calling aresponses with model={routed_request.model_route.target_model}")
+                logger.info(f"[DEBUG astreaming] params_respapi: {routed_request.params_respapi}")
+                logger.info(f"[DEBUG astreaming] messages count: {len(routed_request.messages_respapi)}")
+                
+                try:
+                    resp_stream: BaseResponsesAPIStreamingIterator = await litellm.aresponses(
+                        # TODO Make sure all params are supported
+                        model=routed_request.model_route.target_model,
+                        input=routed_request.messages_respapi,
+                        logger_fn=logger_fn,
+                        headers=headers or {},
+                        timeout=timeout,
+                        client=client,
+                        **routed_request.params_respapi,
+                    )
+                except Exception as e:
+                    logger.error(f"[ERROR astreaming] aresponses call failed: {type(e).__name__}: {str(e)}")
+                    logger.error(f"[ERROR astreaming] Request model: {routed_request.model_route.target_model}")
+                    logger.error(f"[ERROR astreaming] Request params: {routed_request.params_respapi}")
+                    logger.error(f"[ERROR astreaming] Full traceback:\n{traceback.format_exc()}")
+                    raise
 
             else:
                 resp_stream: CustomStreamWrapper = await litellm.acompletion(
@@ -511,6 +568,9 @@ class ClaudeCodeRouter(CustomLLM):
                 pass
 
         except Exception as e:
+            logger.error(f"[ERROR astreaming] Exception in astreaming: {type(e).__name__}: {str(e)}")
+            logger.error(f"[ERROR astreaming] Model: {model}, Stream: True")
+            logger.error(f"[ERROR astreaming] Full exception traceback:\n{traceback.format_exc()}")
             raise ProxyError(e) from e
 
 
