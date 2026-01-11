@@ -434,11 +434,16 @@ _TOOL_TYPE_ALIASES = {
 }
 
 
-_CONTENT_KEYS_TO_DROP = {"cache_control"}
+# Keys to drop from individual content parts
+# - cache_control: Anthropic-specific caching hint
+# - signature: Claude-specific signature for thinking verification
+_CONTENT_KEYS_TO_DROP = {"cache_control", "signature"}
 
 # For regular messages we drop tool_calls / function_call content; tool_call_id is handled
 # explicitly when role == "tool" and converted to function_call_output.
-_MESSAGE_KEYS_TO_DROP = {"tool_calls", "function_call"}
+# - thinking_blocks: Claude-specific extended thinking, not supported by OpenAI
+# - signature: Claude-specific signature for thinking verification
+_MESSAGE_KEYS_TO_DROP = {"tool_calls", "function_call", "thinking_blocks", "signature"}
 
 _FUNCTION_METADATA_KEYS = ("description", "parameters", "strict")
 
@@ -587,16 +592,52 @@ def convert_chat_messages_to_respapi(messages: list[Any]) -> list[dict[str, Any]
     return converted
 
 
+def _convert_thinking_to_text(part: dict[str, Any], role: str) -> Optional[dict[str, Any]]:
+    """
+    Convert a Claude thinking block to plain text format.
+
+    Thinking blocks contain the model's reasoning process. We convert them
+    to plain text so the content is preserved but in a format OpenAI accepts.
+    """
+    if not isinstance(part, dict):
+        return None
+
+    part_type = part.get("type")
+    if part_type != "thinking":
+        return None
+
+    # Extract thinking content from various possible fields
+    thinking_text = part.get("thinking") or part.get("content") or part.get("text") or ""
+    if not thinking_text:
+        return None
+
+    # Convert to plain text with a prefix to indicate it was thinking content
+    return {
+        "type": _default_content_type_for_role(role),
+        "text": f"[Thinking]: {thinking_text}"
+    }
+
+
 def _normalize_message_content(role: str, content: Any) -> list[Any]:
     if isinstance(content, str):
         return [{"type": _default_content_type_for_role(role), "text": content}]
 
     if isinstance(content, dict):
+        # Handle thinking blocks: convert to text
+        if content.get("type") == "thinking":
+            converted = _convert_thinking_to_text(content, role)
+            return [converted] if converted else []
         return [_convert_content_part(role, content)]
 
     if isinstance(content, list):
         normalized_parts: list[Any] = []
         for part in content:
+            # Handle thinking blocks: convert to text
+            if isinstance(part, dict) and part.get("type") == "thinking":
+                converted = _convert_thinking_to_text(part, role)
+                if converted:
+                    normalized_parts.append(converted)
+                continue
             normalized_parts.append(_convert_content_part(role, part))
         return normalized_parts
 

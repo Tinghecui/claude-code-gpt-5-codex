@@ -456,9 +456,9 @@ class ClaudeCodeRouter(CustomLLM):
                 eof_chunk = responses_eof_finalize_chunk()
                 if eof_chunk is not None:
                     yield eof_chunk
-            except Exception:  # pylint: disable=broad-exception-caught
-                # Ignore; best-effort fallback
-                pass
+            except Exception as e:  # pylint: disable=broad-exception-caught
+                # Log the error instead of silently ignoring
+                logger.warning(f"[streaming] EOF finalize failed: {type(e).__name__}: {e}")
 
         except Exception as e:
             logger.error(f"[ERROR streaming] Exception in streaming: {type(e).__name__}: {str(e)}")
@@ -561,9 +561,9 @@ class ClaudeCodeRouter(CustomLLM):
                 eof_chunk = responses_eof_finalize_chunk()
                 if eof_chunk is not None:
                     yield eof_chunk
-            except Exception:  # pylint: disable=broad-exception-caught
-                # Ignore; best-effort fallback
-                pass
+            except Exception as e:  # pylint: disable=broad-exception-caught
+                # Log the error instead of silently ignoring
+                logger.warning(f"[astreaming] EOF finalize failed: {type(e).__name__}: {e}")
 
         except Exception as e:
             logger.error(f"[ERROR astreaming] Exception in astreaming: {type(e).__name__}: {str(e)}")
