@@ -116,6 +116,7 @@ def responses_eof_finalize_chunk() -> Optional[GenericStreamingChunk]:
     JSON, emit a single tool_use. Otherwise emit an assistant-visible error.
     Always clears internal tool state.
     """
+    global _RESPONSES_TOOL_ADOPTED
     try:
         adopted = _RESPONSES_TOOL_ADOPTED
         if not adopted or adopted not in _RESPONSES_TOOL_STATE:
