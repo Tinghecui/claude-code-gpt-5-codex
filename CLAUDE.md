@@ -33,9 +33,6 @@ ANTHROPIC_BASE_URL=http://localhost:4000 claude
 # Install dependencies
 uv sync
 
-# Install with Langfuse logging support
-uv sync --extra langfuse
-
 # Install dev dependencies (black, pylint, pre-commit)
 uv sync --extra dev
 
@@ -64,7 +61,7 @@ uv run pylint claude_code_proxy common
 
 **`common/`** - Shared utilities:
 - `utils.py`: API format conversion between Chat Completions and Responses API. Handles streaming chunk transformation and tool call state management. Uses `contextvars` for request-isolated state to prevent memory leaks and race conditions in concurrent environments.
-- `config.py`: Loads environment, configures Langfuse callbacks, registers custom endpoints.
+- `config.py`: Loads environment configuration for trace logging.
 - `tracing_in_markdown.py`: Optional trace logging to `.traces/` folder.
 
 ### Request State Isolation
