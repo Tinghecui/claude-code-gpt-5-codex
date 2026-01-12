@@ -1,0 +1,27 @@
+[Unit]
+Description=Claude Code GPT-5 Proxy (LiteLLM)
+After=network.target
+
+[Service]
+Type=simple
+User=__USER__
+WorkingDirectory=__WORKDIR__
+Environment="PATH=__UV_PATH__:/usr/local/bin:/usr/bin:/bin"
+EnvironmentFile=__WORKDIR__/.env
+ExecStart=__UV_BIN__ run litellm --config config.yaml --port 4000 --host 0.0.0.0
+
+# Auto restart on failure
+Restart=always
+RestartSec=5
+
+# Memory limits (prevent memory leaks from crashing the system)
+MemoryMax=2G
+MemoryHigh=1.5G
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=claude-code-proxy
+
+[Install]
+WantedBy=multi-user.target
