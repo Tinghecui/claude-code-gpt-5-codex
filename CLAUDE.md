@@ -63,9 +63,23 @@ uv run pylint claude_code_proxy common
 - `proxy_config.py`: Environment variable configuration for model remaps and feature flags.
 
 **`common/`** - Shared utilities:
-- `utils.py`: API format conversion between Chat Completions and Responses API. Handles streaming chunk transformation and tool call state management.
+- `utils.py`: API format conversion between Chat Completions and Responses API. Handles streaming chunk transformation and tool call state management. Uses `contextvars` for request-isolated state to prevent memory leaks and race conditions in concurrent environments.
 - `config.py`: Loads environment, configures Langfuse callbacks, registers custom endpoints.
 - `tracing_in_markdown.py`: Optional trace logging to `.traces/` folder.
+
+### Request State Isolation
+
+The proxy uses Python's `contextvars` module to manage per-request state during streaming. This ensures:
+- Each request has its own isolated tool call state
+- No memory leaks from accumulated state across requests
+- No race conditions when handling concurrent requests
+
+Key context variables in `common/utils.py`:
+- `_RESPONSES_TOOL_STATE`: Accumulates tool call arguments during streaming
+- `_RESPONSES_TOOL_ADOPTED`: Tracks which tool item is adopted for the current turn
+- `_RESPONSES_TELEMETRY`: Debug/telemetry counters
+
+Helper functions: `_get_tool_state()`, `_get_tool_adopted()`, `_set_tool_adopted()`, `_get_telemetry()`, `reset_request_context()`
 
 **`config.yaml`** - LiteLLM configuration that registers `claude_code_router` as a custom provider handling all model requests (`*`).
 

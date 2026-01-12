@@ -34,6 +34,7 @@ from common.utils import (
     convert_chat_params_to_respapi,
     convert_respapi_to_model_response,
     generate_timestamp_utc,
+    reset_request_context,
     to_generic_streaming_chunk,
     responses_eof_finalize_chunk,
 )
@@ -384,6 +385,8 @@ class ClaudeCodeRouter(CustomLLM):
         timeout: Optional[Union[float, httpx.Timeout]] = None,
         client: Optional[HTTPHandler] = None,
     ) -> Generator[GenericStreamingChunk, None, None]:
+        # Reset context variables at the start of each request to ensure clean state
+        reset_request_context()
         try:
             routed_request = RoutedRequest(
                 calling_method="streaming",
@@ -485,6 +488,8 @@ class ClaudeCodeRouter(CustomLLM):
         timeout: Optional[Union[float, httpx.Timeout]] = None,
         client: Optional[AsyncHTTPHandler] = None,
     ) -> AsyncGenerator[GenericStreamingChunk, None]:
+        # Reset context variables at the start of each request to ensure clean state
+        reset_request_context()
         try:
             routed_request = RoutedRequest(
                 calling_method="astreaming",

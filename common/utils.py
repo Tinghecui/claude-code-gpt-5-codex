@@ -3,6 +3,7 @@
 """
 NOTE: The utilities in this module were mostly vibe-coded without review.
 """
+import contextvars
 import json
 import os
 from copy import deepcopy
@@ -47,21 +48,81 @@ def env_var_to_bool(value: Optional[str], default: str = "false") -> bool:
     return (value or default).lower() in ("true", "1", "on", "yes", "y")
 
 
-# TODO Refactor to avoid using global state if possible
-# Minimal state to accumulate Responses function_call arguments across chunks
-_RESPONSES_TOOL_STATE: dict[str, dict[str, Any]] = {}
-# Track which Responses tool item (by item_id) we have adopted for this turn.
-# We only ever emit a single tool_use for the adopted item.
-_RESPONSES_TOOL_ADOPTED: Optional[str] = None
+# --- Context Variables for Request Isolation ---
+# Using contextvars to ensure each request has its own state, preventing memory leaks
+# and race conditions in concurrent environments.
+
+
+def _default_tool_state() -> dict[str, dict[str, Any]]:
+    """Factory for default tool state dictionary."""
+    return {}
+
+
+def _default_telemetry() -> dict[str, Any]:
+    """Factory for default telemetry dictionary."""
+    return {
+        "saw_tool_items": 0,
+        "extra_tool_items_ignored": 0,
+        "adopted_item_id": None,
+        "adopted_output_index": None,
+    }
+
+
+# Context variables - each async task/request gets its own isolated state
+_RESPONSES_TOOL_STATE: contextvars.ContextVar[Optional[dict[str, dict[str, Any]]]] = contextvars.ContextVar(
+    "_responses_tool_state", default=None
+)
+_RESPONSES_TOOL_ADOPTED: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar(
+    "_responses_tool_adopted", default=None
+)
+_RESPONSES_TELEMETRY: contextvars.ContextVar[Optional[dict[str, Any]]] = contextvars.ContextVar(
+    "_responses_telemetry", default=None
+)
+
+# Debug/telemetry flags (these are truly global, read-only after startup)
 _RESPONSES_TOOL_DEBUG = os.environ.get("RESPONSES_TOOL_DEBUG", "0") not in ("0", "", "false", "False")
 _RESPONSES_TELEMETRY_ENABLED = os.environ.get("RESPONSES_TOOL_TELEMETRY", "0") not in ("0", "", "false", "False")
 
-_RESPONSES_TELEMETRY: dict[str, Any] = {
-    "saw_tool_items": 0,
-    "extra_tool_items_ignored": 0,
-    "adopted_item_id": None,
-    "adopted_output_index": None,
-}
+
+# --- Helper functions to access context variables ---
+
+
+def _get_tool_state() -> dict[str, dict[str, Any]]:
+    """Get the tool state for the current request context, initializing if needed."""
+    state = _RESPONSES_TOOL_STATE.get()
+    if state is None:
+        state = _default_tool_state()
+        _RESPONSES_TOOL_STATE.set(state)
+    return state
+
+
+def _get_tool_adopted() -> Optional[str]:
+    """Get the adopted tool ID for the current request context."""
+    return _RESPONSES_TOOL_ADOPTED.get()
+
+
+def _set_tool_adopted(value: Optional[str]) -> None:
+    """Set the adopted tool ID for the current request context."""
+    _RESPONSES_TOOL_ADOPTED.set(value)
+
+
+def _get_telemetry() -> dict[str, Any]:
+    """Get the telemetry data for the current request context, initializing if needed."""
+    telemetry = _RESPONSES_TELEMETRY.get()
+    if telemetry is None:
+        telemetry = _default_telemetry()
+        _RESPONSES_TELEMETRY.set(telemetry)
+    return telemetry
+
+
+def reset_request_context() -> None:
+    """
+    Reset all context variables for the current request.
+    Call this at the start of each request to ensure a clean state.
+    """
+    _RESPONSES_TOOL_STATE.set(_default_tool_state())
+    _RESPONSES_TOOL_ADOPTED.set(None)
+    _RESPONSES_TELEMETRY.set(_default_telemetry())
 
 
 def _log_responses_tool(msg: str) -> None:
@@ -82,7 +143,7 @@ def _telemetry(event: str, **fields: Any) -> None:
 
 
 def _maybe_emit_tool(item_id: str, default_index: int = 0) -> Optional[dict[str, Any]]:
-    state = _RESPONSES_TOOL_STATE.get(item_id)
+    state = _get_tool_state().get(item_id)
     if not state or state.get("emitted"):
         return None
     if not state.get("args_done"):
@@ -116,13 +177,13 @@ def responses_eof_finalize_chunk() -> Optional[GenericStreamingChunk]:
     JSON, emit a single tool_use. Otherwise emit an assistant-visible error.
     Always clears internal tool state.
     """
-    global _RESPONSES_TOOL_ADOPTED
     try:
-        adopted = _RESPONSES_TOOL_ADOPTED
-        if not adopted or adopted not in _RESPONSES_TOOL_STATE:
+        adopted = _get_tool_adopted()
+        tool_state = _get_tool_state()
+        if not adopted or adopted not in tool_state:
             # Nothing pending
             return None
-        state = _RESPONSES_TOOL_STATE.get(adopted, {})
+        state = tool_state.get(adopted, {})
         if state.get("emitted"):
             return None
         args_str = state.get("args", "")
@@ -170,10 +231,10 @@ def responses_eof_finalize_chunk() -> Optional[GenericStreamingChunk]:
     finally:
         # Clear state regardless
         try:
-            _RESPONSES_TOOL_STATE.clear()
+            _get_tool_state().clear()
         except Exception:
             pass
-        _RESPONSES_TOOL_ADOPTED = None
+        _set_tool_adopted(None)
 
 
 def generate_timestamp_utc() -> str:
@@ -831,8 +892,6 @@ def _default_content_type_for_role(role: str) -> str:
 
 
 def _try_parse_responses_chunk(chunk: Any) -> Optional[dict[str, Any]]:
-    global _RESPONSES_TOOL_ADOPTED
-
     def _get(obj: Any, key: str, default: Any = None) -> Any:
         if isinstance(obj, dict):
             return obj.get(key, default)
@@ -925,8 +984,9 @@ def _try_parse_responses_chunk(chunk: Any) -> Optional[dict[str, Any]]:
                 call_id = _get(item, "id") or _get(item, "call_id") or _get(item, "tool_call_id")
                 # Track this function call by its item id
                 item_id_for_state = _get(item, "id")
+                tool_state = _get_tool_state()
                 if isinstance(item_id_for_state, str) and item_id_for_state:
-                    state = _RESPONSES_TOOL_STATE[item_id_for_state]
+                    state = tool_state[item_id_for_state]
                 else:
                     state = {
                         "item_id": item_id_for_state,
@@ -939,7 +999,7 @@ def _try_parse_responses_chunk(chunk: Any) -> Optional[dict[str, Any]]:
                         "index": index,
                         "raw_item": None,
                     }
-                    _RESPONSES_TOOL_STATE[item_id_for_state] = state
+                    tool_state[item_id_for_state] = state
 
                 state["name"] = state.get("name") or (name if isinstance(name, str) else None)
                 state["id"] = state.get("id") or (call_id if isinstance(call_id, str) else None)
@@ -947,17 +1007,19 @@ def _try_parse_responses_chunk(chunk: Any) -> Optional[dict[str, Any]]:
                 _log_responses_tool(
                     f"output_item.added item_id={item_id_for_state} name={state.get('name')} call_id={state.get('id')}"
                 )
-                _RESPONSES_TELEMETRY["saw_tool_items"] = _RESPONSES_TELEMETRY.get("saw_tool_items", 0) + 1
-                if _RESPONSES_TOOL_ADOPTED is None and isinstance(item_id_for_state, str):
-                    _RESPONSES_TELEMETRY["adopted_item_id"] = item_id_for_state
-                    _RESPONSES_TELEMETRY["adopted_output_index"] = index
+                telemetry = _get_telemetry()
+                telemetry["saw_tool_items"] = telemetry.get("saw_tool_items", 0) + 1
+                adopted = _get_tool_adopted()
+                if adopted is None and isinstance(item_id_for_state, str):
+                    telemetry["adopted_item_id"] = item_id_for_state
+                    telemetry["adopted_output_index"] = index
                 elif (
-                    _RESPONSES_TOOL_ADOPTED is not None
+                    adopted is not None
                     and isinstance(item_id_for_state, str)
-                    and _RESPONSES_TOOL_ADOPTED != item_id_for_state
+                    and adopted != item_id_for_state
                 ):
-                    _RESPONSES_TELEMETRY["extra_tool_items_ignored"] = (
-                        _RESPONSES_TELEMETRY.get("extra_tool_items_ignored", 0) + 1
+                    telemetry["extra_tool_items_ignored"] = (
+                        telemetry.get("extra_tool_items_ignored", 0) + 1
                     )
                 tool_use = _maybe_emit_tool(item_id_for_state, default_index=index)
 
@@ -966,7 +1028,8 @@ def _try_parse_responses_chunk(chunk: Any) -> Optional[dict[str, Any]]:
         item_id = _get(chunk, "item_id")
         delta_text = _get(chunk, "delta")
         if isinstance(item_id, str) and isinstance(delta_text, str):
-            state = _RESPONSES_TOOL_STATE.get(item_id)
+            tool_state = _get_tool_state()
+            state = tool_state.get(item_id)
             if state is None:
                 state = {
                     "item_id": item_id,
@@ -979,10 +1042,10 @@ def _try_parse_responses_chunk(chunk: Any) -> Optional[dict[str, Any]]:
                     "index": index,
                     "raw_item": None,
                 }
-                _RESPONSES_TOOL_STATE[item_id] = state
+                tool_state[item_id] = state
             # Adopt the first item we see args for
-            if _RESPONSES_TOOL_ADOPTED is None:
-                _RESPONSES_TOOL_ADOPTED = item_id
+            if _get_tool_adopted() is None:
+                _set_tool_adopted(item_id)
                 _log_responses_tool(f"adopted tool item_id={item_id} via arguments.delta")
             state["args"] = (state.get("args") or "") + delta_text
             tool_use = _maybe_emit_tool(item_id, default_index=index)
@@ -993,7 +1056,8 @@ def _try_parse_responses_chunk(chunk: Any) -> Optional[dict[str, Any]]:
         item_id = _get(chunk, "item_id")
         delta_text = _get(chunk, "delta")
         if isinstance(item_id, str) and isinstance(delta_text, str):
-            state = _RESPONSES_TOOL_STATE.get(item_id)
+            tool_state = _get_tool_state()
+            state = tool_state.get(item_id)
             if state is None:
                 state = {
                     "item_id": item_id,
@@ -1006,22 +1070,23 @@ def _try_parse_responses_chunk(chunk: Any) -> Optional[dict[str, Any]]:
                     "index": index,
                     "raw_item": None,
                 }
-                _RESPONSES_TOOL_STATE[item_id] = state
-            if _RESPONSES_TOOL_ADOPTED is None:
-                _RESPONSES_TOOL_ADOPTED = item_id
+                tool_state[item_id] = state
+            if _get_tool_adopted() is None:
+                _set_tool_adopted(item_id)
                 _log_responses_tool(f"adopted tool item_id={item_id} via input_json.delta")
             state["args"] = (state.get("args") or "") + delta_text
 
     # Finalize args on done
     if chunk_type == "response.function_call_arguments.done":
         item_id = _get(chunk, "item_id")
-        if isinstance(item_id, str) and item_id in _RESPONSES_TOOL_STATE:
+        tool_state = _get_tool_state()
+        if isinstance(item_id, str) and item_id in tool_state:
             # If we haven't adopted yet (no deltas ever), adopt now
-            if _RESPONSES_TOOL_ADOPTED is None:
-                _RESPONSES_TOOL_ADOPTED = item_id
+            if _get_tool_adopted() is None:
+                _set_tool_adopted(item_id)
                 _log_responses_tool(f"adopted tool item_id={item_id} via arguments.done")
-            state = _RESPONSES_TOOL_STATE[item_id]
-            if _RESPONSES_TOOL_ADOPTED == item_id and not state.get("emitted"):
+            state = tool_state[item_id]
+            if _get_tool_adopted() == item_id and not state.get("emitted"):
                 _apply_tool_identity(state)
                 final_args = _get(chunk, "arguments")
                 if isinstance(final_args, (dict, list)):
@@ -1042,8 +1107,9 @@ def _try_parse_responses_chunk(chunk: Any) -> Optional[dict[str, Any]]:
             item_type = _get(item, "type")
             if item_type in {"function_call", "tool_call"}:
                 item_id = _get(item, "id")
-                if isinstance(item_id, str) and item_id in _RESPONSES_TOOL_STATE:
-                    state = _RESPONSES_TOOL_STATE[item_id]
+                tool_state = _get_tool_state()
+                if isinstance(item_id, str) and item_id in tool_state:
+                    state = tool_state[item_id]
                     if not state.get("emitted"):
                         _apply_tool_identity(state, fallback=item)
                         final_args = _get(item, "arguments")
@@ -1058,12 +1124,12 @@ def _try_parse_responses_chunk(chunk: Any) -> Optional[dict[str, Any]]:
                             state["args_done"] = True
                         tool_use = _maybe_emit_tool(item_id, default_index=index)
                     try:
-                        del _RESPONSES_TOOL_STATE[item_id]
+                        del tool_state[item_id]
                     except Exception:
                         pass
                     # Clear adoption if it was this item
-                    if _RESPONSES_TOOL_ADOPTED == item_id:
-                        _RESPONSES_TOOL_ADOPTED = None
+                    if _get_tool_adopted() == item_id:
+                        _set_tool_adopted(None)
 
     # Suppress generic function/tool_call emissions mid-stream; we only emit
     # once on *.arguments.done / output_item.done / completed fallback.
@@ -1092,7 +1158,8 @@ def _try_parse_responses_chunk(chunk: Any) -> Optional[dict[str, Any]]:
                                     "Failed to convert Responses output tool_call arguments to string"
                                 ) from exc
                         call_id = _get(item, "id") or _get(item, "call_id") or _get(item, "tool_call_id")
-                        if _RESPONSES_TOOL_ADOPTED is None or _RESPONSES_TOOL_ADOPTED == _get(item, "id"):
+                        adopted = _get_tool_adopted()
+                        if adopted is None or adopted == _get(item, "id"):
                             final_args = arguments if isinstance(arguments, str) and arguments else "{}"
                             fallback_state = {
                                 "item_id": _get(item, "id"),
@@ -1104,7 +1171,7 @@ def _try_parse_responses_chunk(chunk: Any) -> Optional[dict[str, Any]]:
                                 "index": index,
                                 "raw_item": deepcopy(item),
                             }
-                            _RESPONSES_TOOL_STATE[_get(item, "id")] = fallback_state
+                            _get_tool_state()[_get(item, "id")] = fallback_state
                             tool_use = _maybe_emit_tool(_get(item, "id"), default_index=index)
                         break
 
@@ -1127,10 +1194,10 @@ def _try_parse_responses_chunk(chunk: Any) -> Optional[dict[str, Any]]:
         "response.error",
     }:
         try:
-            _RESPONSES_TOOL_STATE.clear()
+            _get_tool_state().clear()
         except Exception:
             pass
-        _RESPONSES_TOOL_ADOPTED = None
+        _set_tool_adopted(None)
 
     provider_specific_fields: dict[str, Any] = {"responses_type": chunk_type}
     for key in ("response_id", "output_index", "item_id", "id", "status"):
