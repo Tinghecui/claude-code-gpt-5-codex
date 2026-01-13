@@ -71,12 +71,36 @@ The proxy uses Python's `contextvars` module to manage per-request state during 
 - No memory leaks from accumulated state across requests
 - No race conditions when handling concurrent requests
 
+**Concurrency Safety:**
+- `reset_request_context()` is called at the start of ALL request methods (`completion`, `acompletion`, `streaming`, `astreaming`)
+- `finally` blocks ensure context cleanup even when clients disconnect mid-stream
+- Generator cleanup handles `GeneratorExit` gracefully
+
 Key context variables in `common/utils.py`:
 - `_RESPONSES_TOOL_STATE`: Accumulates tool call arguments during streaming
 - `_RESPONSES_TOOL_ADOPTED`: Tracks which tool item is adopted for the current turn
 - `_RESPONSES_TELEMETRY`: Debug/telemetry counters
 
 Helper functions: `_get_tool_state()`, `_get_tool_adopted()`, `_set_tool_adopted()`, `_get_telemetry()`, `reset_request_context()`
+
+### Streaming Diagnostics
+
+The streaming methods include built-in performance diagnostics that print colored logs to stdout:
+
+```
+[STREAM] 请求开始 model=claude-sonnet-4-20250514
+[STREAM] 路由构造完成 (2.1ms) -> gpt-5-codex
+[STREAM] API 调用返回 (156.3ms)
+[STREAM] chunk #0 间隔 12.5ms
+[STREAM] chunk #20 间隔 8.2ms
+[STREAM] chunk #47 间隔 892ms (慢!)    # Yellow warning for >500ms gaps
+[STREAM] 流结束，共 68 chunks，总耗时 3421ms
+```
+
+This helps identify:
+- Slow API response times
+- Network latency issues (chunk gaps >500ms trigger warnings)
+- Overall request performance
 
 **`config.yaml`** - LiteLLM configuration that registers `claude_code_router` as a custom provider handling all model requests (`*`).
 

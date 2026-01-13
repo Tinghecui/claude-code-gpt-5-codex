@@ -1,6 +1,7 @@
 from copy import deepcopy
 from typing import AsyncGenerator, Callable, Generator, Optional, Union
 import logging
+import time
 import traceback
 
 import httpx
@@ -386,6 +387,7 @@ class ClaudeCodeRouter(CustomLLM):
         client: Optional[HTTPHandler] = None,
     ) -> ModelResponse:
         try:
+            reset_request_context()
             routed_request = RoutedRequest(
                 calling_method="completion",
                 model=model,
@@ -476,6 +478,7 @@ class ClaudeCodeRouter(CustomLLM):
         client: Optional[AsyncHTTPHandler] = None,
     ) -> ModelResponse:
         try:
+            reset_request_context()
             routed_request = RoutedRequest(
                 calling_method="acompletion",
                 model=model,
@@ -566,6 +569,10 @@ class ClaudeCodeRouter(CustomLLM):
         timeout: Optional[Union[float, httpx.Timeout]] = None,
         client: Optional[HTTPHandler] = None,
     ) -> Generator[GenericStreamingChunk, None, None]:
+        # === 诊断日志: 请求开始 ===
+        t_start = time.perf_counter()
+        print(f"\033[1;35m[STREAM]\033[0m 请求开始 model={model}")
+
         # Reset context variables at the start of each request to ensure clean state
         reset_request_context()
         try:
@@ -577,12 +584,11 @@ class ClaudeCodeRouter(CustomLLM):
                 stream=True,
             )
 
-            if routed_request.model_route.use_responses_api:
-                logger.info(
-                    f"[DEBUG streaming] Calling responses with model={routed_request.model_route.target_model}"
-                )
-                logger.info(f"[DEBUG streaming] params_respapi: {routed_request.params_respapi}")
+            # === 诊断日志: 路由构造完成 ===
+            t_route = time.perf_counter()
+            print(f"\033[1;35m[STREAM]\033[0m 路由构造完成 ({(t_route - t_start)*1000:.1f}ms) -> {routed_request.model_route.target_model}")
 
+            if routed_request.model_route.use_responses_api:
                 try:
                     resp_stream: BaseResponsesAPIStreamingIterator = litellm.responses(
                         # TODO Make sure all params are supported
@@ -613,7 +619,24 @@ class ClaudeCodeRouter(CustomLLM):
                     **routed_request.params_complapi,
                 )
 
-            for chunk_idx, chunk in enumerate[ModelResponseStream | ResponsesAPIStreamingResponse](resp_stream):
+            # === 诊断日志: API 调用返回 ===
+            t_api = time.perf_counter()
+            print(f"\033[1;35m[STREAM]\033[0m API 调用返回 ({(t_api - t_route)*1000:.1f}ms)")
+
+            chunk_idx = 0
+            t_last_chunk = t_api
+            for chunk in resp_stream:
+                # === 诊断日志: chunk 间隔 ===
+                t_chunk = time.perf_counter()
+                gap = (t_chunk - t_last_chunk) * 1000
+
+                # 如果间隔超过 500ms，打印警告
+                if gap > 500:
+                    print(f"\033[1;33m[STREAM]\033[0m chunk #{chunk_idx} 间隔 {gap:.0f}ms (慢!)")
+                elif chunk_idx % 20 == 0:  # 每 20 个 chunk 打印一次
+                    print(f"\033[1;35m[STREAM]\033[0m chunk #{chunk_idx} 间隔 {gap:.1f}ms")
+
+                t_last_chunk = t_chunk
                 generic_chunk = to_generic_streaming_chunk(chunk)
 
                 if WRITE_TRACES_TO_FILES:
@@ -632,6 +655,11 @@ class ClaudeCodeRouter(CustomLLM):
                     )
 
                 yield generic_chunk
+                chunk_idx += 1
+
+            # === 诊断日志: 流结束 ===
+            t_end = time.perf_counter()
+            print(f"\033[1;35m[STREAM]\033[0m 流结束，共 {chunk_idx} chunks，总耗时 {(t_end - t_start)*1000:.0f}ms")
 
             # EOF fallback: if provider ended stream without a terminal event and
             # we have a pending tool with buffered args, emit once.
@@ -651,6 +679,8 @@ class ClaudeCodeRouter(CustomLLM):
             logger.error(f"[ERROR streaming] Model: {model}, Stream: True")
             logger.error(f"[ERROR streaming] Full exception traceback:\n{traceback.format_exc()}")
             raise ProxyError(e) from e
+        finally:
+            reset_request_context()
 
     async def astreaming(
         self,
@@ -671,6 +701,10 @@ class ClaudeCodeRouter(CustomLLM):
         timeout: Optional[Union[float, httpx.Timeout]] = None,
         client: Optional[AsyncHTTPHandler] = None,
     ) -> AsyncGenerator[GenericStreamingChunk, None]:
+        # === 诊断日志: 请求开始 ===
+        t_start = time.perf_counter()
+        print(f"\033[1;35m[STREAM]\033[0m 请求开始 model={model}")
+
         # Reset context variables at the start of each request to ensure clean state
         reset_request_context()
         try:
@@ -682,13 +716,11 @@ class ClaudeCodeRouter(CustomLLM):
                 stream=True,
             )
 
-            if routed_request.model_route.use_responses_api:
-                logger.info(
-                    f"[DEBUG astreaming] Calling aresponses with model={routed_request.model_route.target_model}"
-                )
-                logger.info(f"[DEBUG astreaming] params_respapi: {routed_request.params_respapi}")
-                logger.info(f"[DEBUG astreaming] messages count: {len(routed_request.messages_respapi)}")
+            # === 诊断日志: 路由构造完成 ===
+            t_route = time.perf_counter()
+            print(f"\033[1;35m[STREAM]\033[0m 路由构造完成 ({(t_route - t_start)*1000:.1f}ms) -> {routed_request.model_route.target_model}")
 
+            if routed_request.model_route.use_responses_api:
                 try:
                     resp_stream: BaseResponsesAPIStreamingIterator = await litellm.aresponses(
                         # TODO Make sure all params are supported
@@ -720,8 +752,24 @@ class ClaudeCodeRouter(CustomLLM):
                     **routed_request.params_complapi,
                 )
 
+            # === 诊断日志: API 调用返回 ===
+            t_api = time.perf_counter()
+            print(f"\033[1;35m[STREAM]\033[0m API 调用返回 ({(t_api - t_route)*1000:.1f}ms)")
+
             chunk_idx = 0
+            t_last_chunk = t_api
             async for chunk in resp_stream:
+                # === 诊断日志: chunk 间隔 ===
+                t_chunk = time.perf_counter()
+                gap = (t_chunk - t_last_chunk) * 1000
+
+                # 如果间隔超过 500ms，打印警告
+                if gap > 500:
+                    print(f"\033[1;33m[STREAM]\033[0m chunk #{chunk_idx} 间隔 {gap:.0f}ms (慢!)")
+                elif chunk_idx % 20 == 0:  # 每 20 个 chunk 打印一次
+                    print(f"\033[1;35m[STREAM]\033[0m chunk #{chunk_idx} 间隔 {gap:.1f}ms")
+
+                t_last_chunk = t_chunk
                 generic_chunk = to_generic_streaming_chunk(chunk)
 
                 if WRITE_TRACES_TO_FILES:
@@ -742,6 +790,10 @@ class ClaudeCodeRouter(CustomLLM):
                 yield generic_chunk
                 chunk_idx += 1
 
+            # === 诊断日志: 流结束 ===
+            t_end = time.perf_counter()
+            print(f"\033[1;35m[STREAM]\033[0m 流结束，共 {chunk_idx} chunks，总耗时 {(t_end - t_start)*1000:.0f}ms")
+
             # EOF fallback: if provider ended stream without a terminal event and
             # we have a pending tool with buffered args, emit once.
             # TODO Refactor or get rid of the try/except block below after the
@@ -760,6 +812,8 @@ class ClaudeCodeRouter(CustomLLM):
             logger.error(f"[ERROR astreaming] Model: {model}, Stream: True")
             logger.error(f"[ERROR astreaming] Full exception traceback:\n{traceback.format_exc()}")
             raise ProxyError(e) from e
+        finally:
+            reset_request_context()
 
 
 claude_code_router = ClaudeCodeRouter()

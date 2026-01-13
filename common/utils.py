@@ -1040,7 +1040,6 @@ def _try_parse_responses_chunk(chunk: Any) -> Optional[dict[str, Any]]:
                 _log_responses_tool(f"adopted tool item_id={item_id} via arguments.delta")
             state["args"] = (state.get("args") or "") + delta_text
             tool_use = _maybe_emit_tool(item_id, default_index=index)
-            tool_use = _maybe_emit_tool(item_id, default_index=index)
 
     # Some providers may stream JSON arguments via input_json.delta
     if chunk_type == "response.input_json.delta":
