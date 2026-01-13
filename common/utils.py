@@ -674,10 +674,7 @@ def _convert_thinking_to_text(part: dict[str, Any], role: str) -> Optional[dict[
         return None
 
     # Convert to plain text with a prefix to indicate it was thinking content
-    return {
-        "type": _default_content_type_for_role(role),
-        "text": f"[Thinking]: {thinking_text}"
-    }
+    return {"type": _default_content_type_for_role(role), "text": f"[Thinking]: {thinking_text}"}
 
 
 def _normalize_message_content(role: str, content: Any) -> list[Any]:
@@ -1013,14 +1010,8 @@ def _try_parse_responses_chunk(chunk: Any) -> Optional[dict[str, Any]]:
                 if adopted is None and isinstance(item_id_for_state, str):
                     telemetry["adopted_item_id"] = item_id_for_state
                     telemetry["adopted_output_index"] = index
-                elif (
-                    adopted is not None
-                    and isinstance(item_id_for_state, str)
-                    and adopted != item_id_for_state
-                ):
-                    telemetry["extra_tool_items_ignored"] = (
-                        telemetry.get("extra_tool_items_ignored", 0) + 1
-                    )
+                elif adopted is not None and isinstance(item_id_for_state, str) and adopted != item_id_for_state:
+                    telemetry["extra_tool_items_ignored"] = telemetry.get("extra_tool_items_ignored", 0) + 1
                 tool_use = _maybe_emit_tool(item_id_for_state, default_index=index)
 
     # Accumulate streaming function_call arguments
@@ -1212,13 +1203,46 @@ def _try_parse_responses_chunk(chunk: Any) -> Optional[dict[str, Any]]:
     if not isinstance(text, str):
         text = ""
 
+    # Extract usage info for terminal events
+    usage_block = None
+    if chunk_type == "response.completed":
+        response_obj = _get(chunk, "response")
+        if response_obj is not None:
+            usage = _get(response_obj, "usage")
+            if isinstance(usage, dict):
+                usage_block = _extract_basic_usage(usage, _get)
+
     return {  # TODO Wrap it into an actual GenericStreamingChunk object ?
         "text": text,
         "finish_reason": finish_reason,
         "is_finished": is_finished,
         "index": index,
         "tool_use": tool_use,
+        "usage": usage_block,
         "provider_specific_fields": provider_specific_fields,
+    }
+
+
+def _extract_basic_usage(usage: dict, getter: callable = None) -> dict:
+    """
+    从 usage 对象中提取基本的 token 使用信息。
+    缓存字段的注入由 claude_code_router.py 中的 patch 处理。
+    """
+    if getter is None:
+        getter = lambda obj, key, default=None: (
+            obj.get(key, default) if isinstance(obj, dict) else getattr(obj, key, default)
+        )
+
+    prompt_tokens = getter(usage, "prompt_tokens") or getter(usage, "input_tokens") or 0
+    completion_tokens = getter(usage, "completion_tokens") or getter(usage, "output_tokens") or 0
+    total_tokens = getter(usage, "total_tokens")
+    if prompt_tokens and completion_tokens and not total_tokens:
+        total_tokens = prompt_tokens + completion_tokens
+
+    return {
+        "prompt_tokens": prompt_tokens,
+        "completion_tokens": completion_tokens,
+        "total_tokens": total_tokens,
     }
 
 
@@ -1235,34 +1259,34 @@ def convert_respapi_to_model_response(respapi_response: ResponsesAPIResponse) ->
 
     model_response: dict[str, Any] = {}
 
-    model_response["id"] = _get(respapi_response, "id")
-    model_response["object"] = _get(respapi_response, "object", "chat.completion")
-    model_response["created"] = _get(respapi_response, "created") or _get(respapi_response, "created_at")
-    model_response["model"] = _get(respapi_response, "model")
+    # Handle response.completed event structure where data is nested in "response"
+    response_obj = _get(respapi_response, "response")
+    if response_obj is not None:
+        # This is a response.completed event, extract from nested response
+        source = response_obj
+    else:
+        source = respapi_response
 
-    metadata = _get(respapi_response, "metadata")
+    model_response["id"] = _get(source, "id") or _get(respapi_response, "id")
+    model_response["object"] = _get(source, "object", "chat.completion")
+    model_response["created"] = (
+        _get(source, "created") or _get(source, "created_at") or _get(respapi_response, "created")
+    )
+    model_response["model"] = _get(source, "model") or _get(respapi_response, "model")
+
+    metadata = _get(source, "metadata")
     if metadata is not None:
         model_response["metadata"] = deepcopy(metadata)
 
-    usage = _get(respapi_response, "usage")
-    if isinstance(usage, dict):
-        # Responses API uses input_tokens/output_tokens, Chat Completions uses prompt_tokens/completion_tokens
-        prompt_tokens = usage.get("prompt_tokens") or usage.get("input_tokens")
-        completion_tokens = usage.get("completion_tokens") or usage.get("output_tokens")
-        total_tokens = usage.get("total_tokens")
-        if prompt_tokens is not None and completion_tokens is not None and total_tokens is None:
-            total_tokens = prompt_tokens + completion_tokens
-        model_response["usage"] = {
-            "prompt_tokens": prompt_tokens,
-            "completion_tokens": completion_tokens,
-            "total_tokens": total_tokens,
-        }
+    usage = _get(source, "usage")
+    if usage is not None:
+        model_response["usage"] = _extract_basic_usage(usage, _get)
 
     text_segments: list[str] = []
     tool_calls: list[dict[str, Any]] = []
     function_call: Optional[dict[str, Any]] = None
 
-    output = _get(respapi_response, "output")
+    output = _get(source, "output")
     if isinstance(output, list):
         for item in output:
             item_type = _get(item, "type") or _get(item, "event")

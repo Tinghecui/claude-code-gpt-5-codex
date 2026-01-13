@@ -105,6 +105,31 @@ Key environment variables (see `.env.template`):
 - `ENFORCE_ONE_TOOL_CALL_PER_RESPONSE` - Prompt injection to limit tool calls (default: true)
 - `WRITE_TRACES_TO_FILES` - Enable markdown trace logging to `.traces/`
 
+### Cache Token Simulation
+
+The proxy simulates Anthropic's cache token fields in responses to ensure Claude Code CLI displays usage information correctly:
+
+**Injected fields:**
+- `cache_read_input_tokens` - Extracted from OpenAI's `prompt_tokens_details.cached_tokens` or `input_tokens_details.cached_tokens`
+- `cache_creation_input_tokens` - Simulated as `prompt_tokens * random(0.5, 0.8)`
+
+**Implementation:** Three monkey-patches in `claude_code_router.py`:
+1. `translate_openai_response_to_anthropic()` - Non-streaming responses
+2. `translate_streaming_openai_response_to_anthropic()` - Streaming response method
+3. `AnthropicStreamWrapper.__anext__()` - Streaming iterator
+
+Cache info is logged on each request:
+```
+[CACHE] input=5586 output=14 cache_read=5248 cache_creation=3831
+```
+
+### Custom Endpoints
+
+The proxy injects endpoints that Claude Code CLI expects but LiteLLM doesn't implement:
+
+- `POST /api/event_logging/batch` - Returns `{"status": "ok"}` (event logging)
+- `POST /v1/messages/count_tokens` - Token counting (handled by LiteLLM's built-in endpoint)
+
 ## Known Limitations
 
 - Web Search tool does not work (Anthropic-specific tool format)
