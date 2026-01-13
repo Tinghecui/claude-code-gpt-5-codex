@@ -23,7 +23,11 @@ from litellm import (
 
 from claude_code_proxy.proxy_config import ENFORCE_ONE_TOOL_CALL_PER_RESPONSE
 from claude_code_proxy.route_model import ModelRoute
-from common.config import WRITE_TRACES_TO_FILES
+from common.config import (
+    ENABLE_STREAM_DIAGNOSTIC_LOGS,
+    STREAM_DIAGNOSTIC_SLOW_GAP_MS,
+    WRITE_TRACES_TO_FILES,
+)
 from common.tracing_in_markdown import (
     write_request_trace,
     write_response_trace,
@@ -569,9 +573,12 @@ class ClaudeCodeRouter(CustomLLM):
         timeout: Optional[Union[float, httpx.Timeout]] = None,
         client: Optional[HTTPHandler] = None,
     ) -> Generator[GenericStreamingChunk, None, None]:
-        # === 诊断日志: 请求开始 ===
-        t_start = time.perf_counter()
-        print(f"\033[1;35m[STREAM]\033[0m 请求开始 model={model}")
+        diag_enabled = ENABLE_STREAM_DIAGNOSTIC_LOGS
+        if diag_enabled:
+            t_start = time.perf_counter()
+            print(f"\033[1;35m[STREAM]\033[0m 请求开始 model={model}")
+        else:
+            t_start = 0.0
 
         # Reset context variables at the start of each request to ensure clean state
         reset_request_context()
@@ -584,9 +591,13 @@ class ClaudeCodeRouter(CustomLLM):
                 stream=True,
             )
 
-            # === 诊断日志: 路由构造完成 ===
-            t_route = time.perf_counter()
-            print(f"\033[1;35m[STREAM]\033[0m 路由构造完成 ({(t_route - t_start)*1000:.1f}ms) -> {routed_request.model_route.target_model}")
+            if diag_enabled:
+                t_route = time.perf_counter()
+                print(
+                    f"\033[1;35m[STREAM]\033[0m 路由构造完成 ({(t_route - t_start)*1000:.1f}ms) -> {routed_request.model_route.target_model}"
+                )
+            else:
+                t_route = 0.0
 
             if routed_request.model_route.use_responses_api:
                 try:
@@ -619,24 +630,24 @@ class ClaudeCodeRouter(CustomLLM):
                     **routed_request.params_complapi,
                 )
 
-            # === 诊断日志: API 调用返回 ===
-            t_api = time.perf_counter()
-            print(f"\033[1;35m[STREAM]\033[0m API 调用返回 ({(t_api - t_route)*1000:.1f}ms)")
+            if diag_enabled:
+                t_api = time.perf_counter()
+                print(f"\033[1;35m[STREAM]\033[0m API 调用返回 ({(t_api - t_route)*1000:.1f}ms)")
+                chunk_idx = 0
+                t_last_chunk = t_api
+            else:
+                t_api = 0.0
+                chunk_idx = 0
+                t_last_chunk = 0.0
 
-            chunk_idx = 0
-            t_last_chunk = t_api
             for chunk in resp_stream:
-                # === 诊断日志: chunk 间隔 ===
-                t_chunk = time.perf_counter()
-                gap = (t_chunk - t_last_chunk) * 1000
+                if diag_enabled:
+                    t_chunk = time.perf_counter()
+                    gap = (t_chunk - t_last_chunk) * 1000
+                    if gap > STREAM_DIAGNOSTIC_SLOW_GAP_MS:
+                        print(f"\033[1;33m[STREAM]\033[0m chunk #{chunk_idx} 间隔 {gap:.0f}ms (慢!)")
+                    t_last_chunk = t_chunk
 
-                # 如果间隔超过 500ms，打印警告
-                if gap > 500:
-                    print(f"\033[1;33m[STREAM]\033[0m chunk #{chunk_idx} 间隔 {gap:.0f}ms (慢!)")
-                elif chunk_idx % 20 == 0:  # 每 20 个 chunk 打印一次
-                    print(f"\033[1;35m[STREAM]\033[0m chunk #{chunk_idx} 间隔 {gap:.1f}ms")
-
-                t_last_chunk = t_chunk
                 generic_chunk = to_generic_streaming_chunk(chunk)
 
                 if WRITE_TRACES_TO_FILES:
@@ -657,9 +668,11 @@ class ClaudeCodeRouter(CustomLLM):
                 yield generic_chunk
                 chunk_idx += 1
 
-            # === 诊断日志: 流结束 ===
-            t_end = time.perf_counter()
-            print(f"\033[1;35m[STREAM]\033[0m 流结束，共 {chunk_idx} chunks，总耗时 {(t_end - t_start)*1000:.0f}ms")
+            if diag_enabled:
+                t_end = time.perf_counter()
+                print(
+                    f"\033[1;35m[STREAM]\033[0m 流结束，共 {chunk_idx} chunks，总耗时 {(t_end - t_start)*1000:.0f}ms"
+                )
 
             # EOF fallback: if provider ended stream without a terminal event and
             # we have a pending tool with buffered args, emit once.
@@ -701,9 +714,12 @@ class ClaudeCodeRouter(CustomLLM):
         timeout: Optional[Union[float, httpx.Timeout]] = None,
         client: Optional[AsyncHTTPHandler] = None,
     ) -> AsyncGenerator[GenericStreamingChunk, None]:
-        # === 诊断日志: 请求开始 ===
-        t_start = time.perf_counter()
-        print(f"\033[1;35m[STREAM]\033[0m 请求开始 model={model}")
+        diag_enabled = ENABLE_STREAM_DIAGNOSTIC_LOGS
+        if diag_enabled:
+            t_start = time.perf_counter()
+            print(f"\033[1;35m[STREAM]\033[0m 请求开始 model={model}")
+        else:
+            t_start = 0.0
 
         # Reset context variables at the start of each request to ensure clean state
         reset_request_context()
@@ -716,9 +732,13 @@ class ClaudeCodeRouter(CustomLLM):
                 stream=True,
             )
 
-            # === 诊断日志: 路由构造完成 ===
-            t_route = time.perf_counter()
-            print(f"\033[1;35m[STREAM]\033[0m 路由构造完成 ({(t_route - t_start)*1000:.1f}ms) -> {routed_request.model_route.target_model}")
+            if diag_enabled:
+                t_route = time.perf_counter()
+                print(
+                    f"\033[1;35m[STREAM]\033[0m 路由构造完成 ({(t_route - t_start)*1000:.1f}ms) -> {routed_request.model_route.target_model}"
+                )
+            else:
+                t_route = 0.0
 
             if routed_request.model_route.use_responses_api:
                 try:
@@ -752,24 +772,24 @@ class ClaudeCodeRouter(CustomLLM):
                     **routed_request.params_complapi,
                 )
 
-            # === 诊断日志: API 调用返回 ===
-            t_api = time.perf_counter()
-            print(f"\033[1;35m[STREAM]\033[0m API 调用返回 ({(t_api - t_route)*1000:.1f}ms)")
+            if diag_enabled:
+                t_api = time.perf_counter()
+                print(f"\033[1;35m[STREAM]\033[0m API 调用返回 ({(t_api - t_route)*1000:.1f}ms)")
+                chunk_idx = 0
+                t_last_chunk = t_api
+            else:
+                t_api = 0.0
+                chunk_idx = 0
+                t_last_chunk = 0.0
 
-            chunk_idx = 0
-            t_last_chunk = t_api
             async for chunk in resp_stream:
-                # === 诊断日志: chunk 间隔 ===
-                t_chunk = time.perf_counter()
-                gap = (t_chunk - t_last_chunk) * 1000
+                if diag_enabled:
+                    t_chunk = time.perf_counter()
+                    gap = (t_chunk - t_last_chunk) * 1000
+                    if gap > STREAM_DIAGNOSTIC_SLOW_GAP_MS:
+                        print(f"\033[1;33m[STREAM]\033[0m chunk #{chunk_idx} 间隔 {gap:.0f}ms (慢!)")
+                    t_last_chunk = t_chunk
 
-                # 如果间隔超过 500ms，打印警告
-                if gap > 500:
-                    print(f"\033[1;33m[STREAM]\033[0m chunk #{chunk_idx} 间隔 {gap:.0f}ms (慢!)")
-                elif chunk_idx % 20 == 0:  # 每 20 个 chunk 打印一次
-                    print(f"\033[1;35m[STREAM]\033[0m chunk #{chunk_idx} 间隔 {gap:.1f}ms")
-
-                t_last_chunk = t_chunk
                 generic_chunk = to_generic_streaming_chunk(chunk)
 
                 if WRITE_TRACES_TO_FILES:
@@ -790,9 +810,11 @@ class ClaudeCodeRouter(CustomLLM):
                 yield generic_chunk
                 chunk_idx += 1
 
-            # === 诊断日志: 流结束 ===
-            t_end = time.perf_counter()
-            print(f"\033[1;35m[STREAM]\033[0m 流结束，共 {chunk_idx} chunks，总耗时 {(t_end - t_start)*1000:.0f}ms")
+            if diag_enabled:
+                t_end = time.perf_counter()
+                print(
+                    f"\033[1;35m[STREAM]\033[0m 流结束，共 {chunk_idx} chunks，总耗时 {(t_end - t_start)*1000:.0f}ms"
+                )
 
             # EOF fallback: if provider ended stream without a terminal event and
             # we have a pending tool with buffered args, emit once.

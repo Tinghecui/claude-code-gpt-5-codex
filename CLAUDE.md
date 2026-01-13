@@ -85,7 +85,7 @@ Helper functions: `_get_tool_state()`, `_get_tool_adopted()`, `_set_tool_adopted
 
 ### Streaming Diagnostics
 
-The streaming methods include built-in performance diagnostics that print colored logs to stdout:
+The streaming methods include built-in performance diagnostics that print colored logs to stdout (disabled by default; enable with `ENABLE_STREAM_DIAGNOSTIC_LOGS=true` and adjust the slow-gap threshold with `STREAM_DIAGNOSTIC_SLOW_GAP_MS=500`):
 
 ```
 [STREAM] 请求开始 model=claude-sonnet-4-20250514
