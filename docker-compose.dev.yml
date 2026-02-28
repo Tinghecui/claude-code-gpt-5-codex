@@ -1,0 +1,14 @@
+# Meant to be overlaid on top of docker-compose.yml
+services:
+  claude-code-gpt-5:
+    build: .
+    image: claude-code-gpt-5:dev
+    volumes:
+      - .:/app
+      - app-venv:/app/.venv
+      # To boost performance of `uv sync` operation
+      - uv-cache:/root/.cache/uv
+
+volumes:
+  app-venv:
+  uv-cache:
